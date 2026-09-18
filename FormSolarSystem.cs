@@ -12,9 +12,7 @@ namespace GalaxiaplanismoDesorbitante
         private readonly System.Windows.Forms.Timer _timer;
         private readonly List<CelestialBody> _planets = new();
         private readonly List<Galaxy> _galaxies = new();
-        private float _flatten = 1.0f;
         private float _time = 0f;
-        private float _cameraDistance = 1.0f; // controla crecimiento de las espirales
 
         public FormSolarSystem()
         {
@@ -30,6 +28,8 @@ namespace GalaxiaplanismoDesorbitante
 
             KeyPreview = true;
             KeyDown += FormSolarSystem_KeyDown;
+
+            SimulationState.StateChanged += OnSimulationStateChanged;
         }
 
         private void InitializeBodies()
@@ -44,8 +44,6 @@ namespace GalaxiaplanismoDesorbitante
 
         private void InitializeGalaxies()
         {
-            var w = ClientSize.Width;
-            var h = ClientSize.Height;
             _galaxies.Add(new Galaxy(GalaxyType.Spiral, new PointF(150, 120), 100, Color.FromArgb(200, 230, 200)) { Arms = 3, RotationDegrees = -12f });
             _galaxies.Add(new Galaxy(GalaxyType.Elliptical, new PointF(1000, 100), 120, Color.FromArgb(200, 200, 255)) { RotationDegrees = 20f });
             _galaxies.Add(new Galaxy(GalaxyType.Ring, new PointF(900, 650), 90, Color.FromArgb(255, 200, 200)) { RotationDegrees = -30f });
@@ -54,13 +52,17 @@ namespace GalaxiaplanismoDesorbitante
 
         private void FormSolarSystem_KeyDown(object? sender, KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.Left) { _flatten = Math.Max(0.2f, _flatten - 0.05f); Invalidate(); }
-            else if (e.KeyCode == Keys.Right) { _flatten = Math.Min(2.0f, _flatten + 0.05f); Invalidate(); }
-            else if (e.KeyCode == Keys.Up) { _cameraDistance = Math.Min(2.5f, _cameraDistance + 0.06f); }   // acercar
-            else if (e.KeyCode == Keys.Down) { _cameraDistance = Math.Max(0.3f, _cameraDistance - 0.06f); } // alejar
-            else if (e.KeyCode == Keys.PageUp) { foreach (var p in _planets) p.OrbitSpeed *= 1.05f; }
-            else if (e.KeyCode == Keys.PageDown) { foreach (var p in _planets) p.OrbitSpeed *= 0.95f; }
+            if (e.KeyCode == Keys.Left) SimulationState.AdjustAxisTilt(-2f);
+            else if (e.KeyCode == Keys.Right) SimulationState.AdjustAxisTilt(2f);
+            else if (e.KeyCode == Keys.Up) SimulationState.AdjustFlatten(-0.04f);
+            else if (e.KeyCode == Keys.Down) SimulationState.AdjustFlatten(0.04f);
+            else if (e.KeyCode == Keys.PageUp) SimulationState.AdjustSystemScale(0.05f);
+            else if (e.KeyCode == Keys.PageDown) SimulationState.AdjustSystemScale(-0.05f);
+            else if (e.KeyCode == Keys.Add || e.KeyCode == Keys.Oemplus) SimulationState.AdjustCameraDistance(0.06f);
+            else if (e.KeyCode == Keys.Subtract || e.KeyCode == Keys.OemMinus) SimulationState.AdjustCameraDistance(-0.06f);
         }
+
+        private void OnSimulationStateChanged() => Invalidate();
 
         private void UpdateTick()
         {
@@ -76,31 +78,46 @@ namespace GalaxiaplanismoDesorbitante
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.Clear(Color.Black);
 
-            // Dibujar galaxias de fondo con influencia de cameraDistance
+            var camDist = SimulationState.CameraDistance;
+            var systemPos = SimulationState.SystemPosition;
+            var flatten = SimulationState.Flatten;
+            var tilt = SimulationState.AxisTiltDeg;
+            var scale = SimulationState.SystemScale;
+
+            // Galaxias de fondo reciben la info de proyección
             foreach (var gal in _galaxies)
             {
-                gal.Draw(g, _cameraDistance, _time);
+                gal.Draw(g, camDist, _time, systemPos, ClientSize, tilt, flatten);
             }
 
-            PointF center = new PointF(ClientSize.Width / 2f, ClientSize.Height / 2f);
-            // Sol (tiene en Y un ligero escalado por flatten)
-            g.FillEllipse(Brushes.Yellow, center.X - 24, center.Y - 24 * _flatten, 48, 48 * _flatten);
+            // centro del sistema en píxeles
+            var sysCenter = new PointF(systemPos.X * ClientSize.Width, systemPos.Y * ClientSize.Height);
+
+            // Dibujamos órbitas y planetas rotando por tilt (transform)
+            var save = g.Save();
+            g.TranslateTransform(sysCenter.X, sysCenter.Y);
+            g.RotateTransform(tilt); // inclinar eje
+            // dibujar sol con scale/flatten aplicados localmente: usar coordenadas locales (0,0)
+            float sunW = 48f * scale;
+            float sunH = sunW * MathF.Max(0.2f, flatten);
+            g.FillEllipse(Brushes.Yellow, -sunW / 2f, -sunH / 2f, sunW, sunH);
 
             using var orbitPen = new Pen(Color.FromArgb(60, 200, 200, 200));
             foreach (var p in _planets)
             {
-                float rx = p.OrbitRadius;
-                float ry = p.OrbitRadius * _flatten;
-                g.DrawEllipse(orbitPen, center.X - rx, center.Y - ry, rx * 2, ry * 2);
+                float rx = p.OrbitRadius * scale;
+                float ry = p.OrbitRadius * scale * flatten;
+                g.DrawEllipse(orbitPen, -rx, -ry, rx * 2, ry * 2);
 
-                var pos = p.GetPosition(center, _flatten);
+                var pos = p.GetPosition(new PointF(0, 0), flatten);
                 using var b = new SolidBrush(p.Color);
                 g.FillEllipse(b, pos.X - p.Size / 2f, pos.Y - p.Size / 2f, p.Size, p.Size);
             }
+            g.Restore(save);
 
             using var font = new Font("Consolas", 12, FontStyle.Bold);
-            g.DrawString($"Achatar (Y): {_flatten:0.00}    Distancia cam: {_cameraDistance:0.00}", font, Brushes.LightGreen, 10, 10);
-            g.DrawString("← →: achatar | ↑ ↓: acercar/alejar (afecta espirales) | PgUp/PgDn: velocidad orbital", font, Brushes.LightGray, 10, 30);
+            g.DrawString($"Pos: ({systemPos.X:0.00},{systemPos.Y:0.00})  Tilt: {tilt:0.0}°  Flatten: {flatten:0.00}  Dist: {camDist:0.00}", font, Brushes.LightGreen, 10, 10);
+            g.DrawString("← →: inclinar eje | ↑ ↓: aplanar/levantar | + / -: abrir/ciñar espirales | PgUp/PgDn: escala sistema", font, Brushes.LightGray, 10, 30);
         }
     }
 }

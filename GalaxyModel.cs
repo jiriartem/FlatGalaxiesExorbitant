@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
 
 namespace GalaxiaplanismoDesorbitante.Models
@@ -14,7 +13,7 @@ namespace GalaxiaplanismoDesorbitante.Models
         public float Size { get; set; }
         public Color BaseColor { get; set; }
         public int Arms { get; set; } = 3;
-        public float RotationDegrees { get; set; } = 0f; // ladeado independiente
+        public float RotationDegrees { get; set; } = 0f;
         private readonly int _seed;
 
         public Galaxy(GalaxyType type, PointF center, float size, Color color)
@@ -27,54 +26,87 @@ namespace GalaxiaplanismoDesorbitante.Models
             _seed = _rng.Next();
         }
 
-        // globalDistance: >1 = c醡ara m醩 cerca (espirales se abren), <1 = m醩 lejos (se ci馿n)
-        public void Draw(Graphics g, float globalDistance, float time)
+        // Firma extendida: ahora recibe inclinaci贸n del sistema y flatten para proyectar
+        public void Draw(Graphics g, float globalDistance, float time, PointF systemPosNormalized, Size canvasSize, float systemTiltDeg, float systemFlatten)
         {
             switch (Type)
             {
                 case GalaxyType.Spiral:
-                    DrawSpiral(g, globalDistance, time);
+                    DrawSpiral(g, globalDistance, time, systemPosNormalized, canvasSize, systemTiltDeg, systemFlatten);
                     break;
                 case GalaxyType.Elliptical:
-                    DrawElliptical(g, globalDistance);
+                    DrawElliptical(g, globalDistance, systemTiltDeg, systemFlatten);
                     break;
                 case GalaxyType.Ring:
-                    DrawRing(g, globalDistance, time);
+                    DrawRing(g, globalDistance, time, systemPosNormalized, canvasSize, systemTiltDeg, systemFlatten);
                     break;
                 case GalaxyType.Irregular:
-                    DrawIrregular(g, globalDistance);
+                    DrawIrregular(g, globalDistance, systemPosNormalized, canvasSize, systemTiltDeg, systemFlatten);
                     break;
             }
         }
 
-        private void DrawSpiral(Graphics g, float distance, float time)
+        // Compatibilidad: sobrecarga simplificada (mantener si hay llamadas antiguas)
+        public void Draw(Graphics g, float globalDistance, float time)
+        {
+            var vb = g.VisibleClipBounds;
+            var canvas = new Size(Math.Max(1, (int)vb.Width), Math.Max(1, (int)vb.Height));
+            var sysPos = new PointF(0.5f, 0.5f);
+            Draw(g, globalDistance, time, sysPos, canvas, 0f, 1f);
+        }
+
+        private void DrawSpiral(Graphics g, float distance, float time, PointF systemPosNormalized, Size canvasSize, float systemTiltDeg, float systemFlatten)
         {
             var state = g.Save();
+
+            // Proximidad del sistema a la galaxia [0..1]
+            var sysPx = new PointF(systemPosNormalized.X * canvasSize.Width, systemPosNormalized.Y * canvasSize.Height);
+            var dx = Center.X - sysPx.X;
+            var dy = Center.Y - sysPx.Y;
+            var distToSystem = MathF.Sqrt(dx * dx + dy * dy);
+            var maxDiag = MathF.Sqrt(canvasSize.Width * canvasSize.Width + canvasSize.Height * canvasSize.Height);
+            var proximity = 1f - MathF.Min(1f, distToSystem / (maxDiag * 0.5f));
+
+            // rotaci贸n combinada: rotaci贸n propia + influencia del tilt del sistema (proximity-weighted)
+            float combinedRotation = RotationDegrees + systemTiltDeg * (0.6f * proximity);
             g.TranslateTransform(Center.X, Center.Y);
-            g.RotateTransform(RotationDegrees);
+            g.RotateTransform(combinedRotation);
 
             int stars = (int)(Size * 18);
-            double turns = 2.5 + (_rng.NextDouble() * 2.0); // vueltas de la espiral
-            float growthFactor = 1f + (distance - 1f) * 0.8f; // mapea distancia a tama駉/desenrollado
+            double turns = 2.5 + (_rng.NextDouble() * 2.0);
+            float growthFactor = 1f + (distance - 1f) * 0.8f;
             float wobble = (float)(Math.Sin(time * 0.6 + _seed) * 0.6);
 
             for (int i = 0; i < stars; i++)
             {
-                double t = i / (double)stars; // 0..1
-                // Logarithmic-like spiral: r = a * exp(b * theta) -> aproximamos con potencia para control
+                double t = i / (double)stars;
                 double theta = t * turns * Math.PI * 2 + time * 0.15 * (1 + _rng.NextDouble());
                 double baseRadius = t * Size;
                 double radialNoise = baseRadius * (0.05 + 0.25 * _rng.NextDouble());
-                // Apply growth/zoom: when distance changes, espiral se abre/ci馿.
                 float r = (float)((baseRadius + radialNoise) * (growthFactor + wobble * 0.02));
 
-                // Bias towards arms: mayor probabilidad cerca de arm centers
                 double armOffset = (theta * Arms) % (Math.PI * 2);
                 double armDensity = Math.Pow(Math.Cos(armOffset), 10);
                 if (_rng.NextDouble() < 0.25 + 0.65 * armDensity)
                 {
                     float x = (float)(Math.Cos(theta) * r);
-                    float y = (float)(Math.Sin(theta) * r * (0.6 + (1 - (float)distance) * 0.2)); // flatten visual subtle
+                    float y = (float)(Math.Sin(theta) * r);
+
+                    // aplicar flatten del sistema sobre Y (proyecci贸n)
+                    y *= systemFlatten;
+
+                    // artefacto orbital: desplazamiento oscilatorio cuando la galaxia est谩 cerca del sistema
+                    if (proximity > 0.05f)
+                    {
+                        var dirX = -dx; var dirY = -dy;
+                        var len = MathF.Sqrt(dirX * dirX + dirY * dirY) + 0.0001f;
+                        dirX /= len; dirY /= len;
+                        var perpX = -dirY; var perpY = dirX;
+                        float amplitude = 6f * proximity * (0.6f + (float)(Math.Sin(time * 1.5 + i * 0.03)));
+                        x += perpX * amplitude * (float)(0.3 + 0.7 * _rng.NextDouble());
+                        y += perpY * amplitude * (float)(0.3 + 0.7 * _rng.NextDouble());
+                    }
+
                     int s = _rng.Next(1, 4);
                     int alpha = 120 + (int)(120 * (1 - t));
                     using var b = new SolidBrush(Color.FromArgb(Math.Min(255, Math.Max(40, alpha)), BaseColor));
@@ -82,22 +114,26 @@ namespace GalaxiaplanismoDesorbitante.Models
                 }
             }
 
-            // N鷆leo
             float nuc = Size * 0.14f * (0.8f + (distance - 1f) * 0.4f);
             using (var b = new SolidBrush(Color.FromArgb(180, 255, 230, 140)))
-                g.FillEllipse(b, -nuc, -nuc, nuc * 2, nuc * 2);
+                g.FillEllipse(b, -nuc, -nuc * systemFlatten, nuc * 2, nuc * 2 * systemFlatten);
 
             g.Restore(state);
         }
 
-        private void DrawElliptical(Graphics g, float distance)
+        private void DrawElliptical(Graphics g, float distance, float systemTiltDeg, float systemFlatten)
         {
             var state = g.Save();
+
+            var combinedRotation = RotationDegrees + systemTiltDeg * 0.4f;
             g.TranslateTransform(Center.X, Center.Y);
-            g.RotateTransform(RotationDegrees);
+            g.RotateTransform(combinedRotation);
 
             float w = Size * (0.9f + (distance - 1f) * 0.2f);
             float h = Size * (0.6f * (0.7f + (1f / (0.8f + distance * 0.2f))));
+            // aplicar flatten de sistema sobre la altura
+            h *= systemFlatten;
+
             using var b = new SolidBrush(Color.FromArgb(40, BaseColor));
             g.FillEllipse(b, -w / 2, -h / 2, w, h);
             using var p = new Pen(Color.FromArgb(120, BaseColor));
@@ -106,21 +142,26 @@ namespace GalaxiaplanismoDesorbitante.Models
             g.Restore(state);
         }
 
-        private void DrawRing(Graphics g, float distance, float time)
+        private void DrawRing(Graphics g, float distance, float time, PointF systemPosNormalized, Size canvasSize, float systemTiltDeg, float systemFlatten)
         {
             var state = g.Save();
+
+            var combinedRotation = RotationDegrees + (float)(time * 8.0 % 360) + systemTiltDeg * 0.5f;
             g.TranslateTransform(Center.X, Center.Y);
-            g.RotateTransform(RotationDegrees + (float)(time * 8.0 % 360));
+            g.RotateTransform(combinedRotation);
 
             float outer = Size * (0.9f + (distance - 1f) * 0.3f);
             float inner = outer * 0.55f;
             var rnd = _rng;
+
             for (int i = 0; i < 140; i++)
             {
                 double a = i / 140.0 * Math.PI * 2 + time * 0.4;
                 double r = inner + (outer - inner) * (0.4 + 0.6 * rnd.NextDouble());
                 float x = (float)(r * Math.Cos(a));
-                float y = (float)(r * Math.Sin(a) * (0.6f + (1f - distance) * 0.2f));
+                float y = (float)(r * Math.Sin(a));
+                y *= systemFlatten;
+
                 int s = rnd.Next(1, 4);
                 using var b = new SolidBrush(Color.FromArgb(120 + rnd.Next(80), BaseColor));
                 g.FillEllipse(b, x - s / 2f, y - s / 2f, s, s);
@@ -129,11 +170,13 @@ namespace GalaxiaplanismoDesorbitante.Models
             g.Restore(state);
         }
 
-        private void DrawIrregular(Graphics g, float distance)
+        private void DrawIrregular(Graphics g, float distance, PointF systemPosNormalized, Size canvasSize, float systemTiltDeg, float systemFlatten)
         {
             var state = g.Save();
+
+            var combinedRotation = RotationDegrees + systemTiltDeg * 0.4f;
             g.TranslateTransform(Center.X, Center.Y);
-            g.RotateTransform(RotationDegrees);
+            g.RotateTransform(combinedRotation);
 
             int pts = 80;
             for (int i = 0; i < pts; i++)
@@ -141,7 +184,9 @@ namespace GalaxiaplanismoDesorbitante.Models
                 double a = i / (double)pts * Math.PI * 2;
                 double r = Size * (0.2 + 0.8 * _rng.NextDouble()) * (0.8 + (distance - 1f) * 0.3);
                 float x = (float)(r * Math.Cos(a));
-                float y = (float)(r * Math.Sin(a) * (0.6f + (1 - distance) * 0.2f));
+                float y = (float)(r * Math.Sin(a));
+                y *= systemFlatten;
+
                 int s = _rng.Next(1, 4);
                 using var b = new SolidBrush(Color.FromArgb(90 + _rng.Next(160), BaseColor));
                 g.FillEllipse(b, x - s / 2f, y - s / 2f, s, s);
@@ -161,9 +206,11 @@ namespace GalaxiaplanismoDesorbitante.Models
             var center = new PointF(R.Next(60, Math.Max(120, w - 60)), R.Next(60, Math.Max(120, h - 60)));
             float size = R.Next(40, 140);
             Color baseColor = Color.FromArgb(R.Next(140, 255), R.Next(80, 255), R.Next(80, 255), R.Next(255));
-            var g = new Galaxy(type, center, size, baseColor);
-            g.Arms = R.Next(2, 5);
-            g.RotationDegrees = (float)R.NextDouble() * 360f;
+            var g = new Galaxy(type, center, size, baseColor)
+            {
+                Arms = R.Next(2, 5),
+                RotationDegrees = (float)(R.NextDouble() * 360f)
+            };
             return g;
         }
     }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
+using GalaxiaplanismoDesorbitante;
 using GalaxiaplanismoDesorbitante.Models;
 using SolarSystemSim.Models;
 
@@ -43,7 +44,7 @@ namespace SolarSystemSim
             _galaxies.Clear();
             for (int i = 0; i < count; i++)
             {
-                _galaxies.Add(GalaxyFactory.RandomGalaxy(ClientSize.Width, ClientSize.Height));
+                _galaxies.Add(GalaxiaplanismoDesorbitante.GalaxyFactory.RandomGalaxy(ClientSize.Width, ClientSize.Height));
             }
 
             // Ensure at least two visible examples (as in your request)
