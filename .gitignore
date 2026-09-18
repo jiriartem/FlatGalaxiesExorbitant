@@ -4,3 +4,5 @@
 
 /.vs/FlatGalaxiesExorbitant
 /obj
+/bin/Debug/net8.0-windows
+/.vs
